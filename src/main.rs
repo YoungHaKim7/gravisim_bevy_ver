@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::input::mouse::MouseWheel;
+use bevy::sprite::MaterialMesh2dBundle;
 
 mod body;
 use body::Body;
@@ -17,45 +18,43 @@ fn main() {
         .run();
 }
 
-fn setup(mut commands: Commands) {
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
     commands.spawn(Camera2dBundle::default());
+
+    // Create a common circle mesh
+    let circle_mesh = meshes.add(Circle::new(1.0)); // Unit circle
 
     // Spawn a few bodies for testing
     commands.spawn((
         Body::new(0.0, 0.0, 0.0, 0.0, 1000.0, 50.0),
-        SpriteBundle {
-            sprite: Sprite {
-                color: Color::rgb(1.0, 1.0, 1.0),
-                custom_size: Some(Vec2::new(50.0, 50.0)),
-                ..default()
-            },
-            transform: Transform::from_xyz(0.0, 0.0, 0.0),
+        MaterialMesh2dBundle {
+            mesh: circle_mesh.clone().into(),
+            material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 1.0))),
+            transform: Transform::from_xyz(0.0, 0.0, 0.0).with_scale(Vec3::splat(50.0)), // Scale to initial size
             ..default()
         },
     ));
 
     commands.spawn((
         Body::new(200.0, 0.0, 0.0, 2.0, 1.0, 20.0),
-        SpriteBundle {
-            sprite: Sprite {
-                color: Color::rgb(0.5, 0.5, 1.0),
-                custom_size: Some(Vec2::new(20.0, 20.0)),
-                ..default()
-            },
-            transform: Transform::from_xyz(200.0, 0.0, 0.0),
+        MaterialMesh2dBundle {
+            mesh: circle_mesh.clone().into(),
+            material: materials.add(ColorMaterial::from(Color::rgb(0.5, 0.5, 1.0))),
+            transform: Transform::from_xyz(200.0, 0.0, 0.0).with_scale(Vec3::splat(20.0)),
             ..default()
         },
     ));
 
     commands.spawn((
         Body::new(-200.0, 0.0, 0.0, -2.0, 1.0, 20.0),
-        SpriteBundle {
-            sprite: Sprite {
-                color: Color::rgb(1.0, 0.5, 0.5),
-                custom_size: Some(Vec2::new(20.0, 20.0)),
-                ..default()
-            },
-            transform: Transform::from_xyz(-200.0, 0.0, 0.0),
+        MaterialMesh2dBundle {
+            mesh: circle_mesh.clone().into(),
+            material: materials.add(ColorMaterial::from(Color::rgb(1.0, 0.5, 0.5))),
+            transform: Transform::from_xyz(-200.0, 0.0, 0.0).with_scale(Vec3::splat(20.0)),
             ..default()
         },
     ));
@@ -116,14 +115,19 @@ fn compute_gravity_system(mut query: Query<&mut Body>) {
     }
 }
 
-fn body_sprite_system(mut query: Query<(&Body, &mut Transform)>) {
-    for (body, mut transform) in query.iter_mut() {
+fn body_sprite_system(mut query: Query<(&Body, &mut Transform, &mut Handle<ColorMaterial>)>, mut materials: ResMut<Assets<ColorMaterial>>) {
+    for (body, mut transform, mut material_handle) in query.iter_mut() {
         transform.translation.x = body.x;
         transform.translation.y = body.y;
         // Set Z to 0 for 2D rendering
         transform.translation.z = 0.0;
         // Update sprite size based on body size
-        transform.scale = Vec3::new(body.size / 50.0, body.size / 50.0, 1.0);
+        transform.scale = Vec3::splat(body.size); // Scale the unit circle to the body's size
+
+        // Update color
+        if let Some(material) = materials.get_mut(&*material_handle) {
+            material.color = body.color;
+        }
     }
 }
 
@@ -299,6 +303,8 @@ fn editor_input_system(
     mut body_query: Query<Entity, With<Body>>,
     mut camera_transform_query: Query<&mut Transform, With<Camera2d>>,
     mut elastic_collisions_enabled: ResMut<ElasticCollisionsEnabled>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let window = windows.single();
     let (camera, camera_transform) = camera_query.single();
@@ -354,13 +360,10 @@ fn editor_input_system(
                         selected_body_state.selected_density,
                         selected_body_state.selected_size,
                     ),
-                    SpriteBundle {
-                        sprite: Sprite {
-                            color: Color::rgb(1.0, 1.0, 1.0),
-                            custom_size: Some(Vec2::new(selected_body_state.selected_size, selected_body_state.selected_size)),
-                            ..default()
-                        },
-                        transform: Transform::from_xyz(selected_body_state.selected_pos.x, selected_body_state.selected_pos.y, 0.0),
+                    MaterialMesh2dBundle {
+                        mesh: meshes.add(Circle::new(1.0)).into(), // Use Circle mesh
+                        material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 1.0))), // Default color
+                        transform: Transform::from_xyz(selected_body_state.selected_pos.x, selected_body_state.selected_pos.y, 0.0).with_scale(Vec3::splat(selected_body_state.selected_size)),
                         ..default()
                     },
                 ));
