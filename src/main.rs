@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::input::mouse::MouseWheel;
 
 mod body;
 use body::Body;
@@ -9,8 +10,8 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .register_type::<Body>()
-        .add_systems(Startup, setup)
-        .add_systems(Update, (update_bodies, compute_gravity_system, body_sprite_system))
+        .add_systems(Startup, (setup, hud_setup)) // Add hud_setup to Startup
+        .add_systems(Update, (update_bodies, compute_gravity_system, body_sprite_system, camera_control_system, hud_update_system)) // Add hud_update_system to Update
         .run();
 }
 
@@ -31,7 +32,7 @@ fn setup(mut commands: Commands) {
         },
     ));
 
-    commands.spawn(( 
+    commands.spawn((
         Body::new(200.0, 0.0, 0.0, 2.0, 1.0, 20.0),
         SpriteBundle {
             sprite: Sprite {
@@ -121,5 +122,95 @@ fn body_sprite_system(mut query: Query<(&Body, &mut Transform)>) {
         transform.translation.z = 0.0;
         // Update sprite size based on body size
         transform.scale = Vec3::new(body.size / 50.0, body.size / 50.0, 1.0);
+    }
+}
+
+fn camera_control_system(
+    mut camera_query: Query<&mut Transform, With<Camera2d>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut mouse_wheel_events: EventReader<MouseWheel>,
+    time: Res<Time>,
+) {
+    let mut camera_transform = camera_query.single_mut();
+    let mut camera_translation = camera_transform.translation;
+    let mut camera_scale = camera_transform.scale.x; // Assuming uniform scale
+
+    let camera_speed = 500.0 * time.delta_seconds();
+    let zoom_speed = 0.1f32; // Corrected to f32
+
+    // Keyboard pan
+    if keyboard_input.pressed(KeyCode::KeyW) {
+        camera_translation.y += camera_speed / camera_scale;
+    }
+    if keyboard_input.pressed(KeyCode::KeyS) {
+        camera_translation.y -= camera_speed / camera_scale;
+    }
+    if keyboard_input.pressed(KeyCode::KeyA) {
+        camera_translation.x -= camera_speed / camera_scale;
+    }
+    if keyboard_input.pressed(KeyCode::KeyD) {
+        camera_translation.x += camera_speed / camera_scale;
+    }
+
+    // Mouse wheel zoom
+    for event in mouse_wheel_events.read() {
+        let scroll_delta = event.y;
+        let old_scale = camera_scale;
+        camera_scale *= (1.0 + zoom_speed).powf(-scroll_delta);
+
+        // Adjust camera position to zoom towards the center of the screen
+        // This is a simplified approach. A more accurate one would involve mouse position.
+        camera_translation.x = camera_translation.x * (camera_scale / old_scale);
+        camera_translation.y = camera_translation.y * (camera_scale / old_scale);
+    }
+
+    camera_transform.translation = camera_translation;
+    camera_transform.scale = Vec3::splat(camera_scale);
+}
+
+#[derive(Component)]
+struct HudText;
+
+fn hud_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let font = asset_server.load("fonts/start.ttf"); // Assuming font is in assets/fonts/start.ttf
+
+    commands.spawn(
+        TextBundle::from_section(
+            "FPS: ",
+            TextStyle {
+                font: font.clone(),
+                font_size: 20.0,
+                color: Color::WHITE,
+            },
+        )
+        .with_style(Style {
+            position_type: PositionType::Absolute,
+            top: Val::Px(10.0),
+            left: Val::Px(10.0),
+            ..default()
+        }),
+    ).insert(HudText);
+
+    commands.spawn(
+        TextBundle::from_section(
+            "R: RESET\nH: TOGGLE HUD\nSCROLL: ZOOM\nZ/X: CHANGE SIZE\nC/V: CHANGE DENSITY\nE: TOGGLE ELASTIC ({})",
+            TextStyle {
+                font: font.clone(),
+                font_size: 16.0,
+                color: Color::WHITE,
+            },
+        )
+        .with_style(Style {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(10.0),
+            left: Val::Px(10.0),
+            ..default()
+        }),
+    );
+}
+
+fn hud_update_system(mut query: Query<&mut Text, With<HudText>>, time: Res<Time>) {
+    for mut text in query.iter_mut() {
+        text.sections[0].value = format!("FPS: {:.0}", 1.0 / time.delta_seconds());
     }
 }
