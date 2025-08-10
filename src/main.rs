@@ -1,5 +1,5 @@
-use bevy::prelude::*;
 use bevy::input::mouse::MouseWheel;
+use bevy::prelude::*;
 use bevy::sprite::MaterialMesh2dBundle;
 
 mod body;
@@ -14,7 +14,18 @@ fn main() {
         .init_resource::<SelectedBodyState>()
         .init_resource::<ElasticCollisionsEnabled>() // Initialize the resource
         .add_systems(Startup, (setup, hud_setup))
-        .add_systems(Update, (update_bodies, compute_gravity_system, elastic_collision_system, body_sprite_system, camera_control_system, hud_update_system, editor_input_system)) // Add elastic_collision_system
+        .add_systems(
+            Update,
+            (
+                update_bodies,
+                compute_gravity_system,
+                elastic_collision_system,
+                body_sprite_system,
+                camera_control_system,
+                hud_update_system,
+                editor_input_system,
+            ),
+        ) // Add elastic_collision_system
         .run();
 }
 
@@ -115,7 +126,10 @@ fn compute_gravity_system(mut query: Query<&mut Body>) {
     }
 }
 
-fn body_sprite_system(mut query: Query<(&Body, &mut Transform, &mut Handle<ColorMaterial>)>, mut materials: ResMut<Assets<ColorMaterial>>) {
+fn body_sprite_system(
+    mut query: Query<(&Body, &mut Transform, &mut Handle<ColorMaterial>)>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
     for (body, mut transform, mut material_handle) in query.iter_mut() {
         transform.translation.x = body.x;
         transform.translation.y = body.y;
@@ -183,22 +197,24 @@ struct HudControlsText; // New component
 fn hud_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font = asset_server.load("fonts/start.ttf"); // Assuming font is in assets/fonts/start.ttf
 
-    commands.spawn(
-        TextBundle::from_section(
-            "FPS: ",
-            TextStyle {
-                font: font.clone(),
-                font_size: 20.0,
-                color: Color::WHITE,
-            },
+    commands
+        .spawn(
+            TextBundle::from_section(
+                "FPS: ",
+                TextStyle {
+                    font: font.clone(),
+                    font_size: 20.0,
+                    color: Color::WHITE,
+                },
+            )
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                top: Val::Px(10.0),
+                left: Val::Px(10.0),
+                ..default()
+            }),
         )
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            top: Val::Px(10.0),
-            left: Val::Px(10.0),
-            ..default()
-        }),
-    ).insert(HudText);
+        .insert(HudText);
 
     commands.spawn(
         TextBundle::from_section(
@@ -274,7 +290,8 @@ fn elastic_collision_system(
                 // Collision detected
                 let normal = distance_vec.normalize();
                 let relative_velocity = Vec2::new(body1.v_x - body2.v_x, body1.v_y - body2.v_y);
-                let impulse_magnitude = 2.0 * relative_velocity.dot(normal) / (body1.mass + body2.mass);
+                let impulse_magnitude =
+                    2.0 * relative_velocity.dot(normal) / (body1.mass + body2.mass);
 
                 body1.v_x -= impulse_magnitude * body2.mass * normal.x;
                 body1.v_y -= impulse_magnitude * body2.mass * normal.y;
@@ -309,19 +326,25 @@ fn editor_input_system(
     let window = windows.single();
     let (camera, camera_transform) = camera_query.single();
 
-    // Get mouse position in world coordinates
+    // Convert mouse to world coordinates
     let mouse_world_pos = window.cursor_position().and_then(|cursor| {
-        camera.viewport_to_world(camera_transform, cursor)
+        camera
+            .viewport_to_world(camera_transform, cursor)
             .map(|ray| ray.origin.truncate())
     });
 
+    // Debug logging
+    if let Some(pos) = mouse_world_pos {
+        info!("Mouse world position: {:?}", pos);
+    } else {
+        info!("Mouse outside window or no position.");
+    }
+
     // Reset simulation
     if keyboard_input.just_pressed(KeyCode::KeyR) {
-        // Despawn all Body entities
         for entity in body_query.iter() {
             commands.entity(entity).despawn();
         }
-        // Reset camera to default
         let mut cam_transform = camera_transform_query.single_mut();
         cam_transform.translation = Vec3::ZERO;
         cam_transform.scale = Vec3::ONE;
@@ -335,38 +358,45 @@ fn editor_input_system(
         elastic_collisions_enabled.0 = !elastic_collisions_enabled.0;
     }
 
-    // Body creation
+    // Record start position when mouse is pressed
     if mouse_button_input.just_pressed(MouseButton::Left) {
         if let Some(pos) = mouse_world_pos {
-            if !selected_body_state.pos_selected {
-                selected_body_state.pos_selected = true;
-                selected_body_state.selected_pos = pos;
-            }
+            selected_body_state.pos_selected = true;
+            selected_body_state.selected_pos = pos;
+            info!("Start pos: {:?}", pos);
         }
     }
 
+    // On release — spawn the body
     if mouse_button_input.just_released(MouseButton::Left) {
-        if selected_body_state.pos_selected {
-            if let Some(pos) = mouse_world_pos {
-                selected_body_state.pos_selected = false;
-                selected_body_state.selected_vel = (pos - selected_body_state.selected_pos) / 50.0;
+        if let Some(end_pos) = mouse_world_pos {
+            if selected_body_state.pos_selected {
+                let velocity = (end_pos - selected_body_state.selected_pos) / 50.0;
+                info!("End pos: {:?}, Velocity: {:?}", end_pos, velocity);
 
                 commands.spawn((
                     Body::new(
                         selected_body_state.selected_pos.x,
                         selected_body_state.selected_pos.y,
-                        selected_body_state.selected_vel.x,
-                        selected_body_state.selected_vel.y,
+                        velocity.x,
+                        velocity.y,
                         selected_body_state.selected_density,
                         selected_body_state.selected_size,
                     ),
                     MaterialMesh2dBundle {
-                        mesh: meshes.add(Circle::new(1.0)).into(), // Use Circle mesh
-                        material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 1.0))), // Default color
-                        transform: Transform::from_xyz(selected_body_state.selected_pos.x, selected_body_state.selected_pos.y, 0.0).with_scale(Vec3::splat(selected_body_state.selected_size)),
+                        mesh: meshes.add(Circle::new(1.0)).into(),
+                        material: materials.add(ColorMaterial::from(Color::WHITE)),
+                        transform: Transform::from_xyz(
+                            selected_body_state.selected_pos.x,
+                            selected_body_state.selected_pos.y,
+                            0.0,
+                        )
+                        .with_scale(Vec3::splat(selected_body_state.selected_size)),
                         ..default()
                     },
                 ));
+
+                selected_body_state.pos_selected = false;
             }
         }
     }
@@ -401,3 +431,134 @@ fn editor_input_system(
         }
     }
 }
+
+// fn editor_input_system( mut commands: Commands,
+//     windows: Query<&Window>,
+//     camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+//     mouse_button_input: Res<ButtonInput<MouseButton>>,
+//     keyboard_input: Res<ButtonInput<KeyCode>>,
+//     mut selected_body_state: ResMut<SelectedBodyState>,
+//     mut body_query: Query<Entity, With<Body>>,
+//     mut camera_transform_query: Query<&mut Transform, With<Camera2d>>,
+//     mut elastic_collisions_enabled: ResMut<ElasticCollisionsEnabled>,
+//     mut meshes: ResMut<Assets<Mesh>>,
+//     mut materials: ResMut<Assets<ColorMaterial>>,
+// ) {
+//     let window = windows.single();
+//     let (camera, camera_transform) = camera_query.single();
+
+//     // Get mouse position in world coordinates
+//     let mouse_world_pos = window.cursor_position().and_then(|cursor| {
+//         camera
+//             .viewport_to_world(camera_transform, cursor)
+//             .map(|ray| ray.origin.truncate())
+//     });
+
+//     // Reset simulation
+//     if keyboard_input.just_pressed(KeyCode::KeyR) {
+//         // Despawn all Body entities
+//         for entity in body_query.iter() {
+//             commands.entity(entity).despawn();
+//         }
+//         // Reset camera to default
+//         let mut cam_transform = camera_transform_query.single_mut();
+//         cam_transform.translation = Vec3::ZERO;
+//         cam_transform.scale = Vec3::ONE;
+//         selected_body_state.pos_selected = false;
+//         selected_body_state.selected_size = 50.0;
+//         selected_body_state.selected_density = 1.0;
+//     }
+
+//     // Toggle elastic collisions
+//     if keyboard_input.just_pressed(KeyCode::KeyE) {
+//         elastic_collisions_enabled.0 = !elastic_collisions_enabled.0;
+//     }
+
+//     // Body creation
+//     //
+//     if mouse_button_input.just_pressed(MouseButton::Left) {
+//         if let Some(pos) = mouse_world_pos {
+//             commands.spawn((
+//                 Body::new(
+//                     pos.x,
+//                     pos.y,
+//                     0.0,
+//                     0.0,
+//                     selected_body_state.selected_density,
+//                     selected_body_state.selected_size,
+//                 ),
+//                 MaterialMesh2dBundle {
+//                     mesh: meshes.add(Circle::new(1.0)).into(),
+//                     material: materials.add(ColorMaterial::from(Color::WHITE)),
+//                     transform: Transform::from_xyz(pos.x, pos.y, 0.0)
+//                         .with_scale(Vec3::splat(selected_body_state.selected_size)),
+//                     ..default()
+//                 },
+//             ));
+//         }
+//     }
+//     // if mouse_button_input.just_pressed(MouseButton::Left) {
+//     //     if let Some(pos) = mouse_world_pos {
+//     //         if !selected_body_state.pos_selected {
+//     //             selected_body_state.pos_selected = true;
+//     //             selected_body_state.selected_pos = pos;
+//     //         }
+//     //     }
+//     // }
+
+//     // if mouse_button_input.just_released(MouseButton::Left) {
+//     //     if selected_body_state.pos_selected {
+//     //         if let Some(pos) = mouse_world_pos {
+//     //             selected_body_state.pos_selected = false;
+//     //             selected_body_state.selected_vel = (pos - selected_body_state.selected_pos) / 50.0;
+
+//     //             commands.spawn((
+//     //                 Body::new(
+//     //                     selected_body_state.selected_pos.x,
+//     //                     selected_body_state.selected_pos.y,
+//     //                     selected_body_state.selected_vel.x,
+//     //                     selected_body_state.selected_vel.y,
+//     //                     selected_body_state.selected_density,
+//     //                     selected_body_state.selected_size,
+//     //                 ),
+//     //                 MaterialMesh2dBundle {
+//     //                     mesh: meshes.add(Circle::new(1.0)).into(), // Use Circle mesh
+//     //                     material: materials.add(ColorMaterial::from(Color::rgb(1.0, 1.0, 1.0))), // Default color
+//     //                     transform: Transform::from_xyz(selected_body_state.selected_pos.x, selected_body_state.selected_pos.y, 0.0).with_scale(Vec3::splat(selected_body_state.selected_size)),
+//     //                     ..default()
+//     //                 },
+//     //             ));
+//     //         }
+//     //     }
+//     // }
+
+//     // Change size
+//     let size_speed = 0.2;
+//     if keyboard_input.pressed(KeyCode::KeyZ) {
+//         selected_body_state.selected_size += size_speed;
+//         if selected_body_state.selected_size < 1.0 {
+//             selected_body_state.selected_size = 1.0;
+//         }
+//     }
+//     if keyboard_input.pressed(KeyCode::KeyX) {
+//         selected_body_state.selected_size -= size_speed;
+//         if selected_body_state.selected_size < 1.0 {
+//             selected_body_state.selected_size = 1.0;
+//         }
+//     }
+
+//     // Change density
+//     let density_speed = 0.1;
+//     if keyboard_input.pressed(KeyCode::KeyC) {
+//         selected_body_state.selected_density -= density_speed;
+//         if selected_body_state.selected_density < 1.0 {
+//             selected_body_state.selected_density = 1.0;
+//         }
+//     }
+//     if keyboard_input.pressed(KeyCode::KeyV) {
+//         selected_body_state.selected_density += density_speed;
+//         if selected_body_state.selected_density < 1.0 {
+//             selected_body_state.selected_density = 1.0;
+//         }
+//     }
+// }
