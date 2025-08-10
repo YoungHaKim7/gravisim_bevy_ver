@@ -10,8 +10,10 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .register_type::<Body>()
-        .add_systems(Startup, (setup, hud_setup)) // Add hud_setup to Startup
-        .add_systems(Update, (update_bodies, compute_gravity_system, body_sprite_system, camera_control_system, hud_update_system)) // Add hud_update_system to Update
+        .init_resource::<SelectedBodyState>()
+        .init_resource::<ElasticCollisionsEnabled>() // Initialize the resource
+        .add_systems(Startup, (setup, hud_setup))
+        .add_systems(Update, (update_bodies, compute_gravity_system, elastic_collision_system, body_sprite_system, camera_control_system, hud_update_system, editor_input_system)) // Add elastic_collision_system
         .run();
 }
 
@@ -171,6 +173,9 @@ fn camera_control_system(
 #[derive(Component)]
 struct HudText;
 
+#[derive(Component)]
+struct HudControlsText; // New component
+
 fn hud_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font = asset_server.load("fonts/start.ttf"); // Assuming font is in assets/fonts/start.ttf
 
@@ -193,7 +198,7 @@ fn hud_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     commands.spawn(
         TextBundle::from_section(
-            "R: RESET\nH: TOGGLE HUD\nSCROLL: ZOOM\nZ/X: CHANGE SIZE\nC/V: CHANGE DENSITY\nE: TOGGLE ELASTIC ({})",
+            "R: RESET\nH: TOGGLE HUD\nSCROLL: ZOOM\nZ/X: CHANGE SIZE\nC/V: CHANGE DENSITY\nE: TOGGLE ELASTIC (DISABLED)", // Updated text
             TextStyle {
                 font: font.clone(),
                 font_size: 16.0,
@@ -206,11 +211,190 @@ fn hud_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             left: Val::Px(10.0),
             ..default()
         }),
-    );
+    ).insert(HudControlsText); // Insert new component
 }
 
-fn hud_update_system(mut query: Query<&mut Text, With<HudText>>, time: Res<Time>) {
-    for mut text in query.iter_mut() {
-        text.sections[0].value = format!("FPS: {:.0}", 1.0 / time.delta_seconds());
+fn hud_update_system(
+    mut query: Query<(&mut Text, Option<&HudText>, Option<&HudControlsText>)>, // Combined query
+    time: Res<Time>,
+    elastic_collisions_enabled: Res<ElasticCollisionsEnabled>,
+) {
+    for (mut text, is_fps_text, is_controls_text) in query.iter_mut() {
+        if is_fps_text.is_some() {
+            text.sections[0].value = format!("FPS: {:.0}", 1.0 / time.delta_seconds());
+        } else if is_controls_text.is_some() {
+            let controls_text = format!(
+                "R: RESET\nH: TOGGLE HUD\nSCROLL: ZOOM\nZ/X: CHANGE SIZE\nC/V: CHANGE DENSITY\nE: TOGGLE ELASTIC ({})",
+                if elastic_collisions_enabled.0 { "ENABLED" } else { "DISABLED" }
+            );
+            text.sections[0].value = controls_text;
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+struct SelectedBodyState {
+    pos_selected: bool,
+    selected_pos: Vec2,
+    selected_vel: Vec2,
+    selected_size: f32,
+    selected_density: f32,
+}
+
+#[derive(Resource, Default)]
+struct ElasticCollisionsEnabled(bool);
+
+fn elastic_collision_system(
+    mut query: Query<&mut Body>,
+    elastic_collisions_enabled: Res<ElasticCollisionsEnabled>,
+) {
+    if !elastic_collisions_enabled.0 {
+        return;
+    }
+
+    let mut bodies = query.iter_mut().collect::<Vec<Mut<Body>>>();
+    let num_bodies = bodies.len();
+
+    for i in 0..num_bodies {
+        for j in (i + 1)..num_bodies {
+            let (mut body1, mut body2) = {
+                let (b1, b2) = bodies.split_at_mut(j);
+                (b1[i].as_mut(), b2[0].as_mut())
+            };
+
+            let distance_vec = Vec2::new(body2.x - body1.x, body2.y - body1.y);
+            let distance = distance_vec.length();
+            let min_distance = body1.size + body2.size;
+
+            if distance < min_distance {
+                // Collision detected
+                let normal = distance_vec.normalize();
+                let relative_velocity = Vec2::new(body1.v_x - body2.v_x, body1.v_y - body2.v_y);
+                let impulse_magnitude = 2.0 * relative_velocity.dot(normal) / (body1.mass + body2.mass);
+
+                body1.v_x -= impulse_magnitude * body2.mass * normal.x;
+                body1.v_y -= impulse_magnitude * body2.mass * normal.y;
+                body2.v_x += impulse_magnitude * body1.mass * normal.x;
+                body2.v_y += impulse_magnitude * body1.mass * normal.y;
+
+                // Separate bodies to prevent sticking
+                let overlap = min_distance - distance;
+                let separation_vector = normal * overlap * 0.5;
+                body1.x -= separation_vector.x;
+                body1.y -= separation_vector.y;
+                body2.x += separation_vector.x;
+                body2.y += separation_vector.y;
+            }
+        }
+    }
+}
+
+fn editor_input_system(
+    mut commands: Commands,
+    windows: Query<&Window>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    mouse_button_input: Res<ButtonInput<MouseButton>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut selected_body_state: ResMut<SelectedBodyState>,
+    mut body_query: Query<Entity, With<Body>>,
+    mut camera_transform_query: Query<&mut Transform, With<Camera2d>>,
+    mut elastic_collisions_enabled: ResMut<ElasticCollisionsEnabled>,
+) {
+    let window = windows.single();
+    let (camera, camera_transform) = camera_query.single();
+
+    // Get mouse position in world coordinates
+    let mouse_world_pos = window.cursor_position().and_then(|cursor| {
+        camera.viewport_to_world(camera_transform, cursor)
+            .map(|ray| ray.origin.truncate())
+    });
+
+    // Reset simulation
+    if keyboard_input.just_pressed(KeyCode::KeyR) {
+        // Despawn all Body entities
+        for entity in body_query.iter() {
+            commands.entity(entity).despawn();
+        }
+        // Reset camera to default
+        let mut cam_transform = camera_transform_query.single_mut();
+        cam_transform.translation = Vec3::ZERO;
+        cam_transform.scale = Vec3::ONE;
+        selected_body_state.pos_selected = false;
+        selected_body_state.selected_size = 50.0;
+        selected_body_state.selected_density = 1.0;
+    }
+
+    // Toggle elastic collisions
+    if keyboard_input.just_pressed(KeyCode::KeyE) {
+        elastic_collisions_enabled.0 = !elastic_collisions_enabled.0;
+    }
+
+    // Body creation
+    if mouse_button_input.just_pressed(MouseButton::Left) {
+        if let Some(pos) = mouse_world_pos {
+            if !selected_body_state.pos_selected {
+                selected_body_state.pos_selected = true;
+                selected_body_state.selected_pos = pos;
+            }
+        }
+    }
+
+    if mouse_button_input.just_released(MouseButton::Left) {
+        if selected_body_state.pos_selected {
+            if let Some(pos) = mouse_world_pos {
+                selected_body_state.pos_selected = false;
+                selected_body_state.selected_vel = (pos - selected_body_state.selected_pos) / 50.0;
+
+                commands.spawn((
+                    Body::new(
+                        selected_body_state.selected_pos.x,
+                        selected_body_state.selected_pos.y,
+                        selected_body_state.selected_vel.x,
+                        selected_body_state.selected_vel.y,
+                        selected_body_state.selected_density,
+                        selected_body_state.selected_size,
+                    ),
+                    SpriteBundle {
+                        sprite: Sprite {
+                            color: Color::rgb(1.0, 1.0, 1.0),
+                            custom_size: Some(Vec2::new(selected_body_state.selected_size, selected_body_state.selected_size)),
+                            ..default()
+                        },
+                        transform: Transform::from_xyz(selected_body_state.selected_pos.x, selected_body_state.selected_pos.y, 0.0),
+                        ..default()
+                    },
+                ));
+            }
+        }
+    }
+
+    // Change size
+    let size_speed = 0.2;
+    if keyboard_input.pressed(KeyCode::KeyZ) {
+        selected_body_state.selected_size += size_speed;
+        if selected_body_state.selected_size < 1.0 {
+            selected_body_state.selected_size = 1.0;
+        }
+    }
+    if keyboard_input.pressed(KeyCode::KeyX) {
+        selected_body_state.selected_size -= size_speed;
+        if selected_body_state.selected_size < 1.0 {
+            selected_body_state.selected_size = 1.0;
+        }
+    }
+
+    // Change density
+    let density_speed = 0.1;
+    if keyboard_input.pressed(KeyCode::KeyC) {
+        selected_body_state.selected_density -= density_speed;
+        if selected_body_state.selected_density < 1.0 {
+            selected_body_state.selected_density = 1.0;
+        }
+    }
+    if keyboard_input.pressed(KeyCode::KeyV) {
+        selected_body_state.selected_density += density_speed;
+        if selected_body_state.selected_density < 1.0 {
+            selected_body_state.selected_density = 1.0;
+        }
     }
 }
